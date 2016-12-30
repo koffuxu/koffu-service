@@ -1,0 +1,229 @@
+diff --git a/drivers/staging/android/binder.c b/drivers/staging/android/binder.c
+old mode 100644
+new mode 100755
+index 6f116e4..693a6b7
+--- a/drivers/staging/android/binder.c
++++ b/drivers/staging/android/binder.c
+@@ -1013,7 +1013,8 @@ static struct binder_ref *binder_get_ref(struct binder_proc *proc,
+ 	}
+ 	return NULL;
+ }
+-
++//when addService(); it will be in ServiceManger Create binder_ref for KfService
++//proc = sm; node = kfservice->node
+ static struct binder_ref *binder_get_ref_for_node(struct binder_proc *proc,
+ 						  struct binder_node *node)
+ {
+@@ -1021,7 +1022,7 @@ static struct binder_ref *binder_get_ref_for_node(struct binder_proc *proc,
+ 	struct rb_node **p = &proc->refs_by_node.rb_node;
+ 	struct rb_node *parent = NULL;
+ 	struct binder_ref *ref, *new_ref;
+-
++//1, cannot found
+ 	while (*p) {
+ 		parent = *p;
+ 		ref = rb_entry(parent, struct binder_ref, rb_node_node);
+@@ -1033,18 +1034,22 @@ static struct binder_ref *binder_get_ref_for_node(struct binder_proc *proc,
+ 		else
+ 			return ref;
+ 	}
++	//2, new a binder_ref
+ 	new_ref = kzalloc(sizeof(*ref), GFP_KERNEL);
+ 	if (new_ref == NULL)
+ 		return NULL;
+ 	binder_stats_created(BINDER_STAT_REF);
+ 	new_ref->debug_id = ++binder_last_id;
++	//this is target proc,is sm
+ 	new_ref->proc = proc;
++	//this is target node, is kfservice->node
+ 	new_ref->node = node;
+ 	rb_link_node(&new_ref->rb_node_node, parent, p);
+ 	rb_insert_color(&new_ref->rb_node_node, &proc->refs_by_node);
+ 
+ 	new_ref->desc = (node == binder_context_mgr_node) ? 0 : 1;
+ 	for (n = rb_first(&proc->refs_by_desc); n != NULL; n = rb_next(n)) {
++		//3, search a fit point insert the RB tree in sm proc
+ 		ref = rb_entry(n, struct binder_ref, rb_node_desc);
+ 		if (ref->desc > new_ref->desc)
+ 			break;
+@@ -1066,6 +1071,7 @@ static struct binder_ref *binder_get_ref_for_node(struct binder_proc *proc,
+ 	rb_link_node(&new_ref->rb_node_desc, parent, p);
+ 	rb_insert_color(&new_ref->rb_node_desc, &proc->refs_by_desc);
+ 	if (node) {
++		//4, add new_ref kfservice's node refs link head
+ 		hlist_add_head(&new_ref->node_entry, &node->refs);
+ 
+ 		binder_debug(BINDER_DEBUG_INTERNAL_REFS,
+@@ -1326,6 +1332,7 @@ static void binder_transaction(struct binder_proc *proc,
+ 	e->offsets_size = tr->offsets_size;
+ 
+ 	if (reply) {
++		//when sm user back, the thread and proc is sm
+ 		in_reply_to = thread->transaction_stack;
+ 		if (in_reply_to == NULL) {
+ 			binder_user_error("%d:%d got reply transaction with no transaction stack\n",
+@@ -1362,10 +1369,13 @@ static void binder_transaction(struct binder_proc *proc,
+ 			target_thread = NULL;
+ 			goto err_dead_binder;
+ 		}
++		//target_proc is kfservice
+ 		target_proc = target_thread->proc;
+ 	} else {
+ 		if (tr->target.handle) {
+ 			struct binder_ref *ref;
++			//1,it will be search binder_ref in himself proc refs link. the binder_ref will create in binder_get_ref_for_node() in later
++				//search kfservice process is exist servicemanger's binder_res recoder.
+ 			ref = binder_get_ref(proc, tr->target.handle);
+ 			if (ref == NULL) {
+ 				binder_user_error("%d:%d got transaction to invalid handle\n",
+@@ -1410,6 +1420,7 @@ static void binder_transaction(struct binder_proc *proc,
+ 			}
+ 		}
+ 	}
++//get the target_list ,will pass the binder_transaction in target_list
+ 	if (target_thread) {
+ 		e->to_thread = target_thread->pid;
+ 		target_list = &target_thread->todo;
+@@ -1521,6 +1532,8 @@ static void binder_transaction(struct binder_proc *proc,
+ 			return_error = BR_FAILED_REPLY;
+ 			goto err_bad_offset;
+ 		}
++		//get the flat_binder_object; this struct convert to out in finish_flatten_binder();
++		//only the fp point, when fp modify, t will modify the same.
+ 		fp = (struct flat_binder_object *)(t->buffer->data + *offp);
+ 		off_min = *offp + sizeof(struct flat_binder_object);
+ 		switch (fp->type) {
+@@ -1529,6 +1542,7 @@ static void binder_transaction(struct binder_proc *proc,
+ 			struct binder_ref *ref;
+ 			struct binder_node *node = binder_get_node(proc, fp->binder);
+ 			if (node == NULL) {
++				//new a node for kfserviceself
+ 				node = binder_new_node(proc, fp->binder, fp->cookie);
+ 				if (node == NULL) {
+ 					return_error = BR_FAILED_REPLY;
+@@ -1548,15 +1562,20 @@ static void binder_transaction(struct binder_proc *proc,
+ 				return_error = BR_FAILED_REPLY;
+ 				goto err_binder_get_ref_for_node_failed;
+ 			}
++			//will create binder_ref in servicemanager
++			//target_proc = sm; node = kfservice->node
+ 			ref = binder_get_ref_for_node(target_proc, node);
+ 			if (ref == NULL) {
+ 				return_error = BR_FAILED_REPLY;
+ 				goto err_binder_get_ref_for_node_failed;
+ 			}
++			//modify fp,(modify t->buffer->data)
+ 			if (fp->type == BINDER_TYPE_BINDER)
+ 				fp->type = BINDER_TYPE_HANDLE;
+ 			else
+ 				fp->type = BINDER_TYPE_WEAK_HANDLE;
++			
++			//*NOTICE*, this handle will sotre in sm user space
+ 			fp->handle = ref->desc;
+ 			binder_inc_ref(ref, fp->type == BINDER_TYPE_HANDLE,
+ 				       &thread->todo);
+@@ -1569,6 +1588,7 @@ static void binder_transaction(struct binder_proc *proc,
+ 		} break;
+ 		case BINDER_TYPE_HANDLE:
+ 		case BINDER_TYPE_WEAK_HANDLE: {
++			//proc is sm, handle is kf; will get the kfserver->ref in sm proc.is was create in binder_get_ref_for_node(sm,kf->node)
+ 			struct binder_ref *ref = binder_get_ref(proc, fp->handle);
+ 			if (ref == NULL) {
+ 				binder_user_error("%d:%d got transaction with invalid handle, %d\n",
+@@ -1581,6 +1601,7 @@ static void binder_transaction(struct binder_proc *proc,
+ 				return_error = BR_FAILED_REPLY;
+ 				goto err_binder_get_ref_failed;
+ 			}
++			//as ref->node->proc is sm, so it is false!
+ 			if (ref->node->proc == target_proc) {
+ 				if (fp->type == BINDER_TYPE_HANDLE)
+ 					fp->type = BINDER_TYPE_BINDER;
+@@ -1596,11 +1617,14 @@ static void binder_transaction(struct binder_proc *proc,
+ 					     (u64)ref->node->ptr);
+ 			} else {
+ 				struct binder_ref *new_ref;
++				//creat ref in kfservice; 
++				//target_proc = kfservice; ref->node is sm
+ 				new_ref = binder_get_ref_for_node(target_proc, ref->node);
+ 				if (new_ref == NULL) {
+ 					return_error = BR_FAILED_REPLY;
+ 					goto err_binder_get_ref_for_node_failed;
+ 				}
++				
+ 				fp->handle = new_ref->desc;
+ 				binder_inc_ref(new_ref, fp->type == BINDER_TYPE_HANDLE, NULL);
+ 				trace_binder_transaction_ref_to_ref(t, ref,
+@@ -1680,6 +1704,7 @@ static void binder_transaction(struct binder_proc *proc,
+ 		} else
+ 			target_node->has_async_transaction = 1;
+ 	}
++	//transancation t to target_list(servicemanager)
+ 	t->work.type = BINDER_WORK_TRANSACTION;
+ 	list_add_tail(&t->work.entry, target_list);
+ 	tcomplete->type = BINDER_WORK_TRANSACTION_COMPLETE;
+@@ -1738,11 +1763,14 @@ static int binder_thread_write(struct binder_proc *proc,
+ 			binder_size_t *consumed)
+ {
+ 	uint32_t cmd;
++	//0, buffer and ptr point to mOut
++	//mOut layout is |CMD|binder_transcation_data|
+ 	void __user *buffer = (void __user *)(uintptr_t)binder_buffer;
+ 	void __user *ptr = buffer + *consumed;
+ 	void __user *end = buffer + size;
+ 
+ 	while (ptr < end && thread->return_error == BR_OK) {
++		//1,get the mOut CMD(BC_TRANSACTION)
+ 		if (get_user(cmd, (uint32_t __user *)ptr))
+ 			return -EFAULT;
+ 		ptr += sizeof(uint32_t);
+@@ -1908,11 +1936,11 @@ static int binder_thread_write(struct binder_proc *proc,
+ 			binder_free_buf(proc, buffer);
+ 			break;
+ 		}
+-
++//2, deal with BC_TRANSACTION
+ 		case BC_TRANSACTION:
+ 		case BC_REPLY: {
+ 			struct binder_transaction_data tr;
+-
++//2.1, get binder_transaction_data tr, tr's layout is |taget.hanle==0 |cookie | code | flags |sender_pid..| data_size | offsets_size | data(ptr|buf) |
+ 			if (copy_from_user(&tr, ptr, sizeof(tr)))
+ 				return -EFAULT;
+ 			ptr += sizeof(tr);
+@@ -2339,6 +2367,7 @@ retry:
+ 			continue;
+ 
+ 		BUG_ON(t->buffer == NULL);
++		//the target_node is binder_context_mgr_node
+ 		if (t->buffer->target_node) {
+ 			struct binder_node *target_node = t->buffer->target_node;
+ 			tr.target.ptr = target_node->ptr;
+@@ -2356,7 +2385,7 @@ retry:
+ 			tr.cookie = 0;
+ 			cmd = BR_REPLY;
+ 		}
+-		tr.code = t->code;
++		tr.code = t->code; //ADD_SERVICE
+ 		tr.flags = t->flags;
+ 		tr.sender_euid = from_kuid(current_user_ns(), t->sender_euid);
+ 
+@@ -3248,7 +3277,7 @@ static void print_binder_node(struct seq_file *m, struct binder_node *node)
+ 	if (count) {
+ 		seq_puts(m, " proc");
+ 		hlist_for_each_entry(ref, &node->refs, node_entry)
+-			seq_printf(m, " %d", ref->proc->pid);
++			seq_printf(m, " desc %d:%d", ref->desc, ref->proc->pid);
+ 	}
+ 	seq_puts(m, "\n");
+ 	list_for_each_entry(w, &node->async_todo, entry)
+@@ -3258,8 +3287,8 @@ static void print_binder_node(struct seq_file *m, struct binder_node *node)
+ 
+ static void print_binder_ref(struct seq_file *m, struct binder_ref *ref)
+ {
+-	seq_printf(m, "  ref %d: desc %d %snode %d s %d w %d d %p\n",
+-		   ref->debug_id, ref->desc, ref->node->proc ? "" : "dead ",
++	seq_printf(m, "  ref %d: desc %d refPid:%d node %d s %d w %d d %p\n",
++		   ref->debug_id, ref->desc, ref->node->proc->pid,
+ 		   ref->node->debug_id, ref->strong, ref->weak, ref->death);
+ }
+ 
