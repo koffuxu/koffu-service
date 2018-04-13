@@ -35,6 +35,7 @@ public:
 
     virtual int32_t add(int32_t a, int32_t b);
 	virtual int32_t setLedStatus(int32_t eye_up, int32_t eye_down, int32_t mouth, int32_t ear);
+	virtual int getServiceVersion(char *ver, unsigned int len);
     static void instantiate();
 
 private:

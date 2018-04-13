@@ -73,8 +73,8 @@ public class BbtManager {
 		return _getTestValue(x, y);
 	}
 	
-	public static int setLedStatus(int a, int b, int c, int d){
-		return _setLedStatus(a, b, c, d);
+	public static int setLedStatus(int upEye, int downEye, int mouth, int ear){
+		return _setLedStatus(upEye, downEye, mouth, ear);
 	}
 
 	private native static int _getTestValue(int x, int y);
